@@ -1,0 +1,5 @@
+*.DS_Store
+credentials.py
+*.csv
+*.json
+*__pycache__*
