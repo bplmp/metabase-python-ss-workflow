@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 from io import StringIO
 
+from storage import *
+
 is_prod = os.environ.get('IS_PROD', None)
 
 if is_prod:
@@ -63,10 +65,12 @@ if session_token:
     demanda_join = demanda_pivot.join(matriculas_pivot).join(vagas_pivot)
     demanda_join.index.names = ["cod"]
     demanda_join_json = demanda_join.to_json(orient='index')
-    with open("demanda_join_json.json", "w") as text_file:
+    with open("demanda_join.json", "w") as text_file:
         print(demanda_join_json, file=text_file)
+
+
     demanda_join_csv = demanda_join.to_csv()
-    with open("demanda_join_csv.csv", "w") as text_file:
+    with open("demanda_join.csv", "w") as text_file:
         print(demanda_join_csv, file=text_file)
 
     escolas_endpoint = "card/177/query/csv"
@@ -91,11 +95,17 @@ if session_token:
     escolas_join = escolas_df.join(contatos_groupby_esc_df)
     escolas_df.index.names = ["cod"]
     escolas_join_json = escolas_join.to_json(orient='index')
-    with open("escolas_join_json.json", "w") as text_file:
+    with open("escolas_join.json", "w") as text_file:
         print(escolas_join_json, file=text_file)
 
     escolas_join_csv = escolas_join.to_csv()
-    with open("escolas_join_csv.csv", "w") as text_file:
+    with open("escolas_join.csv", "w") as text_file:
         print(escolas_join_csv, file=text_file)
+    print("All downloaded")
+    upload_aws("demanda_join.json")
+    upload_aws("demanda_join.csv")
+    upload_aws("escolas_join.json")
+    upload_aws("escolas_join.csv")
+
 
 print('done.')
