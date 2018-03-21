@@ -1,10 +1,14 @@
 import os
 import json
 import requests
+import gzip
 
 import pandas as pd
 import numpy as np
 from io import StringIO
+
+import geojson
+from geojson import Feature, Point, FeatureCollection
 
 from storage import *
 
@@ -30,6 +34,7 @@ res = requests.post(base_uri + "session", data=json.dumps(payload), headers=head
 
 if res.status_code == requests.codes.ok:
     session_token = res.json()["id"]
+    print("-->Authenticated successfully.")
 
 if session_token:
     session_headers = {"Content-Type": "application/json", "X-Metabase-Session": session_token}
@@ -68,10 +73,15 @@ if session_token:
     with open("demanda_join.json", "w") as text_file:
         print(demanda_join_json, file=text_file)
 
+    with gzip.open('demanda_join_json.gz', 'wb') as f:
+        f.write(demanda_join_json.encode('utf-8'))
 
     demanda_join_csv = demanda_join.to_csv()
     with open("demanda_join.csv", "w") as text_file:
         print(demanda_join_csv, file=text_file)
+
+    with gzip.open('demanda_join_csv.gz', 'wb') as f:
+        f.write(demanda_join_csv.encode('utf-8'))
 
     escolas_endpoint = "card/177/query/csv"
     escolas_res = requests.post(base_uri + escolas_endpoint, headers=session_headers)
@@ -98,14 +108,42 @@ if session_token:
     with open("escolas_join.json", "w") as text_file:
         print(escolas_join_json, file=text_file)
 
+    with gzip.open('escolas_join_json.gz', 'wb') as f:
+        f.write(escolas_join_json.encode('utf-8'))
+
     escolas_join_csv = escolas_join.to_csv()
     with open("escolas_join.csv", "w") as text_file:
         print(escolas_join_csv, file=text_file)
-    print("All downloaded")
-    upload_aws("demanda_join.json")
-    upload_aws("demanda_join.csv")
-    upload_aws("escolas_join.json")
-    upload_aws("escolas_join.csv")
+
+    with gzip.open('escolas_join_csv.gz', 'wb') as f:
+        f.write(escolas_join_csv.encode('utf-8'))
+
+    # convert json to geojson
+    escolas_features = []
+    for index, row in escolas_join[escolas_join.lat.notnull()].iterrows():
+        selected_columns = row[["nome", "tipo_cd", "tipo", "end", "ct"]]
+        if pd.notnull(selected_columns["ct"]):
+            selected_columns["ct"] = json.loads(selected_columns["ct"])
+        properties = selected_columns.to_json(orient="index")
+        feature = Feature(geometry=Point((row["lon"], row["lat"])), properties=properties)
+        escolas_features.append(feature)
+
+    escolas_features
+
+    escolas_join_collection = FeatureCollection(escolas_features)
+    escolas_join_geojson = geojson.dumps(escolas_join_collection, sort_keys=True)
+    with open("escolas_join.geojson", "w") as text_file:
+        print(escolas_join_geojson, file=text_file)
+
+    with gzip.open('escolas_join_geojson.gz', 'wb') as f:
+        f.write(escolas_join_geojson.encode('utf-8'))
+
+    print("-->All downloaded, saved and compressed.")
+    upload_aws("demanda_join_json.gz")
+    upload_aws("demanda_join_csv.gz")
+    upload_aws("escolas_join_json.gz")
+    upload_aws("escolas_join_csv.gz")
+    upload_aws("escolas_join_geojson.gz")
 
 
-print('done.')
+print('-->All done.<--')
