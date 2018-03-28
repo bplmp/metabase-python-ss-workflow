@@ -70,6 +70,19 @@ if session_token:
     demanda_join = demanda_pivot.join(matriculas_pivot).join(vagas_pivot)
     demanda_join.index.names = ["cod"]
     demanda_join_json = demanda_join.to_json(orient='index')
+
+    dem_atual_endpoint = "card/180/query/json"
+    dem_atual_res = requests.post(base_uri + dem_atual_endpoint, headers=session_headers)
+    dem_atual_json = json.loads(dem_atual_res.text)
+
+    demanda_join_json
+    if len(dem_atual_json) > 0:
+        dem_atual_data = dem_atual_json[0]['dt_status_solicitacao']
+
+    demanda_join_dict = json.loads(demanda_join_json)
+    demanda_join_dict["updated_at"] = dem_atual_data
+    demanda_join_json = json.dumps(demanda_join_dict)
+
     with open("demanda_join.json", "w") as text_file:
         print(demanda_join_json, file=text_file)
 
@@ -124,11 +137,12 @@ if session_token:
         selected_columns = row[["nome", "tipo_cd", "tipo", "end", "ct"]]
         if pd.notnull(selected_columns["ct"]):
             selected_columns["ct"] = json.loads(selected_columns["ct"])
-        properties = selected_columns.to_json(orient="index")
+        else:
+            selected_columns["ct"] = ""
+        selected_columns["cod"] = str(index)
+        properties = selected_columns.to_dict()
         feature = Feature(geometry=Point((row["lon"], row["lat"])), properties=properties)
         escolas_features.append(feature)
-
-    escolas_features
 
     escolas_join_collection = FeatureCollection(escolas_features)
     escolas_join_geojson = geojson.dumps(escolas_join_collection, sort_keys=True)
@@ -140,9 +154,9 @@ if session_token:
 
     print("-->All downloaded, saved and compressed.")
     upload_aws("demanda_join_json.gz")
-    upload_aws("demanda_join_csv.gz")
-    upload_aws("escolas_join_json.gz")
-    upload_aws("escolas_join_csv.gz")
+    # upload_aws("demanda_join_csv.gz")
+    # upload_aws("escolas_join_json.gz")
+    # upload_aws("escolas_join_csv.gz")
     upload_aws("escolas_join_geojson.gz")
 
 
