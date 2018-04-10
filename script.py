@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import gzip
+import datetime
 
 import pandas as pd
 import numpy as np
@@ -10,49 +11,80 @@ from io import StringIO
 import geojson
 from geojson import Feature, Point, FeatureCollection
 
-from storage import *
+# from storage import *
+
+import sendgrid
+from sendgrid.helpers.mail import *
+
+import tinys3
 
 is_prod = os.environ.get('IS_PROD', None)
 
 if is_prod:
-	username = os.environ.get('METABASE_USERNAME')
-	password = os.environ.get('METABASE_PASSWORD')
-	api_endpoint = os.environ.get('METABASE_ENDPOINT')
+    username = os.environ.get('METABASE_USERNAME')
+    password = os.environ.get('METABASE_PASSWORD')
+    api_endpoint = os.environ.get('METABASE_ENDPOINT')
+    sendgrid_key = os.environ.get('SENDGRID_API_KEY')
+    recipient_emails = os.environ.get('RECIPIENT_EMAILS')
+    aws_access_key_id = os.environ.get("AWS_ACCESS_KEY_ID")
+    aws_secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    bucket_name = os.environ.get("AWS_BUCKET_NAME")
 else:
-	from credentials import *
+    from credentials import *
 
-base_uri = api_endpoint
-session_token = False;
+def get_data_and_upload():
+    global log_message
 
-payload = {
-  "username": username,
-  "password": password
-}
-headers = {"Content-Type": "application/json"}
+    base_uri = api_endpoint
+    session_token = False;
 
-res = requests.post(base_uri + "session", data=json.dumps(payload), headers=headers)
+    payload = {
+      "username": username,
+      "password": password
+    }
+    headers = {"Content-Type": "application/json"}
 
-if res.status_code == requests.codes.ok:
-    session_token = res.json()["id"]
-    print("-->Authenticated successfully.")
+    res = requests.post(base_uri + "session", data=json.dumps(payload), headers=headers)
 
-if session_token:
+    if res.status_code == requests.codes.ok:
+        session_token = res.json()["id"]
+        print("-->Authenticated successfully.")
+
+    # if session_token:
     session_headers = {"Content-Type": "application/json", "X-Metabase-Session": session_token}
-
-    # demanda_endpoint = "card/173/query/json"
-    # demanda_res = requests.post(base_uri + demanda_endpoint, headers=session_headers)
-    # demanda_json = demanda_res.json()
 
     demanda_endpoint = "card/173/query/csv"
     demanda_res = requests.post(base_uri + demanda_endpoint, headers=session_headers)
+    if demanda_res.status_code == requests.codes.ok:
+        msg = f"-->Downloaded {demanda_endpoint} successfully."
+        print(msg)
+        log_message += msg + "\n"
     demanda_csv = demanda_res.text
     demanda_cols = ["cd_unidade_educacao", "cd_serie_ensino", "count"]
     demanda_df = pd.read_csv(StringIO(demanda_csv), usecols=demanda_cols, index_col="cd_unidade_educacao")
     demanda_pivot = pd.pivot_table(demanda_df, values="count", index="cd_unidade_educacao", columns="cd_serie_ensino", aggfunc=np.sum)
     demanda_pivot = demanda_pivot.add_prefix("dem_")
 
+    dem_1_total = demanda_pivot['dem_1'].sum()
+    dem_4_total = demanda_pivot['dem_4'].sum()
+    dem_27_total = demanda_pivot['dem_27'].sum()
+    dem_28_total = demanda_pivot['dem_28'].sum()
+    dem_total = dem_1_total + dem_4_total + dem_27_total + dem_28_total
+
+    dem_msg = f"""-->Waits are:
+    -dem_1: {dem_1_total}
+    -dem_4: {dem_4_total}
+    -dem_27: {dem_27_total}
+    -dem_28: {dem_28_total}
+    -dem_total: {dem_total}"""
+    log_message += dem_msg + "\n"
+
     matriculas_endpoint = "card/175/query/csv"
     matriculas_res = requests.post(base_uri + matriculas_endpoint, headers=session_headers)
+    if matriculas_res.status_code == requests.codes.ok:
+        msg = f"-->Downloaded {matriculas_endpoint} successfully."
+        print(msg)
+        log_message += msg + "\n"
     matriculas_csv = matriculas_res.text
     matriculas_cols = ["cd_escola", "cd_serie_ensino", "sum"]
     matriculas_df = pd.read_csv(StringIO(matriculas_csv), usecols=matriculas_cols, index_col="cd_escola")
@@ -61,6 +93,10 @@ if session_token:
 
     vagas_endpoint = "card/176/query/csv"
     vagas_res = requests.post(base_uri + vagas_endpoint, headers=session_headers)
+    if vagas_res.status_code == requests.codes.ok:
+        msg = f"-->Downloaded {vagas_endpoint} successfully."
+        print(msg)
+        log_message += msg + "\n"
     vagas_csv = vagas_res.text
     vagas_cols = ["cd_escola", "cd_serie_ensino", "sum"]
     vagas_df = pd.read_csv(StringIO(vagas_csv), usecols=vagas_cols, index_col="cd_escola")
@@ -73,11 +109,18 @@ if session_token:
 
     dem_atual_endpoint = "card/180/query/json"
     dem_atual_res = requests.post(base_uri + dem_atual_endpoint, headers=session_headers)
+    if dem_atual_res.status_code == requests.codes.ok:
+        msg = f"-->Downloaded {dem_atual_endpoint} successfully."
+        print(msg)
+        log_message += msg + "\n"
     dem_atual_json = json.loads(dem_atual_res.text)
 
     demanda_join_json
     if len(dem_atual_json) > 0:
         dem_atual_data = dem_atual_json[0]['dt_status_solicitacao']
+        msg = f"-->Schools wait last updated at {dem_atual_data} in Metabase."
+        print(msg)
+        log_message += msg + "\n"
 
     demanda_join_dict = json.loads(demanda_join_json)
     demanda_join_dict["updated_at"] = dem_atual_data
@@ -89,15 +132,19 @@ if session_token:
     with gzip.open('demanda_join_json.gz', 'wb') as f:
         f.write(demanda_join_json.encode('utf-8'))
 
-    demanda_join_csv = demanda_join.to_csv()
-    with open("demanda_join.csv", "w") as text_file:
-        print(demanda_join_csv, file=text_file)
+    # demanda_join_csv = demanda_join.to_csv()
+    # with open("demanda_join.csv", "w") as text_file:
+    #     print(demanda_join_csv, file=text_file)
 
-    with gzip.open('demanda_join_csv.gz', 'wb') as f:
-        f.write(demanda_join_csv.encode('utf-8'))
+    # with gzip.open('demanda_join_csv.gz', 'wb') as f:
+    #     f.write(demanda_join_csv.encode('utf-8'))
 
     escolas_endpoint = "card/177/query/csv"
     escolas_res = requests.post(base_uri + escolas_endpoint, headers=session_headers)
+    if escolas_res.status_code == requests.codes.ok:
+        msg = f"-->Downloaded {escolas_endpoint} successfully."
+        print(msg)
+        log_message += msg + "\n"
     escolas_csv = escolas_res.text
     escolas_cols = ["cd_unidade_educacao","nm_exibicao_unidade_educacao","tp_escola","sg_tp_escola","cd_latitude","cd_longitude","endereco_completo"]
     escolas_df = pd.read_csv(StringIO(escolas_csv), usecols=escolas_cols, index_col="cd_unidade_educacao")
@@ -105,6 +152,10 @@ if session_token:
 
     contatos_endpoint = "card/178/query/csv"
     contatos_res = requests.post(base_uri + contatos_endpoint, headers=session_headers)
+    if contatos_res.status_code == requests.codes.ok:
+        msg = f"-->Downloaded {contatos_endpoint} successfully."
+        print(msg)
+        log_message += msg + "\n"
     contatos_csv = contatos_res.text
     contatos_cols = ["cd_unidade_educacao","dc_tipo_dispositivo_comunicacao","dc_dispositivo","cd_ramal"]
     contatos_df = pd.read_csv(StringIO(contatos_csv), usecols=contatos_cols, index_col="cd_unidade_educacao")
@@ -118,18 +169,18 @@ if session_token:
     escolas_join = escolas_df.join(contatos_groupby_esc_df)
     escolas_df.index.names = ["cod"]
     escolas_join_json = escolas_join.to_json(orient='index')
-    with open("escolas_join.json", "w") as text_file:
-        print(escolas_join_json, file=text_file)
+    # with open("escolas_join.json", "w") as text_file:
+    #     print(escolas_join_json, file=text_file)
 
-    with gzip.open('escolas_join_json.gz', 'wb') as f:
-        f.write(escolas_join_json.encode('utf-8'))
+    # with gzip.open('escolas_join_json.gz', 'wb') as f:
+    #     f.write(escolas_join_json.encode('utf-8'))
 
-    escolas_join_csv = escolas_join.to_csv()
-    with open("escolas_join.csv", "w") as text_file:
-        print(escolas_join_csv, file=text_file)
+    # escolas_join_csv = escolas_join.to_csv()
+    # with open("escolas_join.csv", "w") as text_file:
+    #     print(escolas_join_csv, file=text_file)
 
-    with gzip.open('escolas_join_csv.gz', 'wb') as f:
-        f.write(escolas_join_csv.encode('utf-8'))
+    # with gzip.open('escolas_join_csv.gz', 'wb') as f:
+    #     f.write(escolas_join_csv.encode('utf-8'))
 
     # convert json to geojson
     escolas_features = []
@@ -152,12 +203,54 @@ if session_token:
     with gzip.open('escolas_join_geojson.gz', 'wb') as f:
         f.write(escolas_join_geojson.encode('utf-8'))
 
-    print("-->All downloaded, saved and compressed.")
-    upload_aws("demanda_join_json.gz")
+    end_msg = "-->All downloaded, saved and compressed."
+    print(end_msg)
+    log_message += end_msg + "\n"
+    
     # upload_aws("demanda_join_csv.gz")
     # upload_aws("escolas_join_json.gz")
     # upload_aws("escolas_join_csv.gz")
-    upload_aws("escolas_join_geojson.gz")
 
+    upload_aws("demanda_join_json.gz", 86400)
+    upload_aws("escolas_join_geojson.gz", 604800)
 
-print('-->All done.<--')
+def upload_aws(filename, expiration):
+    global log_message
+    conn = tinys3.Connection(aws_access_key_id, aws_secret_access_key, tls=True)
+    upload_msg = f"""-->Uploading {filename} to bucket {bucket_name}"""
+    print(upload_msg)
+    log_message += upload_msg
+    f = open(filename, "rb")
+    conn.upload(filename, f, bucket_name, public=True, expires=86400, content_type="application/json", headers={'content-encoding': 'gzip'})
+    done_msg = "-->Done uploading."
+    print(done_msg)
+    log_message += done_msg
+
+def send_log_email(message, time):
+    for recipient in recipient_emails:
+        sg = sendgrid.SendGridAPIClient(apikey=sendgrid_key)
+        from_email = Email("logs@filadacreche.com")
+        to_email = Email(recipient)
+        subject = f"[Fila da Creche] Data logs {current_time}"
+        content = Content("text/plain", message)
+        mail = Mail(from_email, subject, to_email, content)
+        response = sg.client.mail.send.post(request_body=mail.get())
+        print(response.headers)
+
+current_time = datetime.datetime.now()
+log_message = f"-->Running script at {current_time} \n"
+
+try:
+    get_data_and_upload()
+except Exception as e:
+    print(log_message, '-->Error raised:\n', e)
+    log_message += '-->Error raised:\n'
+    log_message += str(e)
+else:
+    print(log_message, '-->Everything ok\n')
+finally:
+    done_msg = '\n-->All done.<--'
+    log_message += done_msg
+    send_log_email(log_message, current_time)
+    print(done_msg)
+
