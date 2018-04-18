@@ -11,11 +11,14 @@ from io import StringIO
 import geojson
 from geojson import Feature, Point, FeatureCollection
 
-# from storage import *
+# bot that sends telegram messages
+from bot import *
 
+# mailer
 import sendgrid
 from sendgrid.helpers.mail import *
 
+# library to upload to static server on aws s3
 import tinys3
 
 is_prod = os.environ.get('IS_PROD', None)
@@ -50,9 +53,9 @@ def get_data_and_upload():
         session_token = res.json()["id"]
         print("-->Authenticated successfully.")
 
-    # if session_token:
     session_headers = {"Content-Type": "application/json", "X-Metabase-Session": session_token}
 
+    # demanda
     demanda_endpoint = "card/173/query/csv"
     demanda_res = requests.post(base_uri + demanda_endpoint, headers=session_headers)
     if demanda_res.status_code == requests.codes.ok:
@@ -79,6 +82,7 @@ def get_data_and_upload():
     -dem_total: {dem_total}"""
     log_message += dem_msg + "\n"
 
+    # matriculas
     matriculas_endpoint = "card/175/query/csv"
     matriculas_res = requests.post(base_uri + matriculas_endpoint, headers=session_headers)
     if matriculas_res.status_code == requests.codes.ok:
@@ -91,6 +95,7 @@ def get_data_and_upload():
     matriculas_pivot = pd.pivot_table(matriculas_df, values="sum", index="cd_escola", columns="cd_serie_ensino", aggfunc=np.sum)
     matriculas_pivot = matriculas_pivot.add_prefix("mat_")
 
+    # vagas
     vagas_endpoint = "card/176/query/csv"
     vagas_res = requests.post(base_uri + vagas_endpoint, headers=session_headers)
     if vagas_res.status_code == requests.codes.ok:
@@ -103,10 +108,12 @@ def get_data_and_upload():
     vagas_pivot = pd.pivot_table(vagas_df, values="sum", index="cd_escola", columns="cd_serie_ensino", aggfunc=np.sum)
     vagas_pivot = vagas_pivot.add_prefix("vag_")
 
+    # join demanda, matriculas, vagas
     demanda_join = demanda_pivot.join(matriculas_pivot).join(vagas_pivot)
     demanda_join.index.names = ["cod"]
     demanda_join_json = demanda_join.to_json(orient='index')
 
+    # data atualizacao demanda
     dem_atual_endpoint = "card/180/query/json"
     dem_atual_res = requests.post(base_uri + dem_atual_endpoint, headers=session_headers)
     if dem_atual_res.status_code == requests.codes.ok:
@@ -115,30 +122,26 @@ def get_data_and_upload():
         log_message += msg + "\n"
     dem_atual_json = json.loads(dem_atual_res.text)
 
-    demanda_join_json
     if len(dem_atual_json) > 0:
         dem_atual_data = dem_atual_json[0]['dt_status_solicitacao']
         msg = f"-->Schools wait last updated at {dem_atual_data} in Metabase."
         print(msg)
         log_message += msg + "\n"
 
+    # join data atualizacao demanda to demanda json
     demanda_join_dict = json.loads(demanda_join_json)
     demanda_join_dict["updated_at"] = dem_atual_data
     demanda_join_json = json.dumps(demanda_join_dict)
 
+    # save to file
     with open("demanda_join.json", "w") as text_file:
         print(demanda_join_json, file=text_file)
 
+    # compress file
     with gzip.open('demanda_join_json.gz', 'wb') as f:
         f.write(demanda_join_json.encode('utf-8'))
 
-    # demanda_join_csv = demanda_join.to_csv()
-    # with open("demanda_join.csv", "w") as text_file:
-    #     print(demanda_join_csv, file=text_file)
-
-    # with gzip.open('demanda_join_csv.gz', 'wb') as f:
-    #     f.write(demanda_join_csv.encode('utf-8'))
-
+    # escolas
     escolas_endpoint = "card/177/query/csv"
     escolas_res = requests.post(base_uri + escolas_endpoint, headers=session_headers)
     if escolas_res.status_code == requests.codes.ok:
@@ -150,6 +153,7 @@ def get_data_and_upload():
     escolas_df = pd.read_csv(StringIO(escolas_csv), usecols=escolas_cols, index_col="cd_unidade_educacao")
     escolas_df = escolas_df.rename(columns={"nm_exibicao_unidade_educacao": "nome", "tp_escola": "tipo_cd", "sg_tp_escola": "tipo", "cd_latitude": "lat", "cd_longitude": "lon", "endereco_completo": "end"})
 
+    # contatos
     contatos_endpoint = "card/178/query/csv"
     contatos_res = requests.post(base_uri + contatos_endpoint, headers=session_headers)
     if contatos_res.status_code == requests.codes.ok:
@@ -166,23 +170,12 @@ def get_data_and_upload():
     contatos_groupby_esc = contatos_df["num"].groupby("cd_unidade_educacao").apply(lambda x: x.to_json(orient='records'))
     contatos_groupby_esc_df = pd.DataFrame({"cd_unidade_educacao":contatos_groupby_esc.index, "ct":contatos_groupby_esc.values}).set_index("cd_unidade_educacao")
 
+    # join escolas, contatos
     escolas_join = escolas_df.join(contatos_groupby_esc_df)
     escolas_df.index.names = ["cod"]
     escolas_join_json = escolas_join.to_json(orient='index')
-    # with open("escolas_join.json", "w") as text_file:
-    #     print(escolas_join_json, file=text_file)
 
-    # with gzip.open('escolas_join_json.gz', 'wb') as f:
-    #     f.write(escolas_join_json.encode('utf-8'))
-
-    # escolas_join_csv = escolas_join.to_csv()
-    # with open("escolas_join.csv", "w") as text_file:
-    #     print(escolas_join_csv, file=text_file)
-
-    # with gzip.open('escolas_join_csv.gz', 'wb') as f:
-    #     f.write(escolas_join_csv.encode('utf-8'))
-
-    # convert json to geojson
+    # convert escolas json to geojson
     escolas_features = []
     for index, row in escolas_join[escolas_join.lat.notnull()].iterrows():
         selected_columns = row[["nome", "tipo_cd", "tipo", "end", "ct"]]
@@ -195,34 +188,33 @@ def get_data_and_upload():
         feature = Feature(geometry=Point((row["lon"], row["lat"])), properties=properties)
         escolas_features.append(feature)
 
+    # save to file
     escolas_join_collection = FeatureCollection(escolas_features)
     escolas_join_geojson = geojson.dumps(escolas_join_collection, sort_keys=True)
     with open("escolas_join.geojson", "w") as text_file:
         print(escolas_join_geojson, file=text_file)
 
+    # compress
     with gzip.open('escolas_join_geojson.gz', 'wb') as f:
         f.write(escolas_join_geojson.encode('utf-8'))
 
     end_msg = "-->All downloaded, saved and compressed."
     print(end_msg)
     log_message += end_msg + "\n"
-    
-    # upload_aws("demanda_join_csv.gz")
-    # upload_aws("escolas_join_json.gz")
-    # upload_aws("escolas_join_csv.gz")
 
+    # upload to static server
     upload_aws("demanda_join_json.gz", 86400)
     upload_aws("escolas_join_geojson.gz", 604800)
 
 def upload_aws(filename, expiration):
     global log_message
     conn = tinys3.Connection(aws_access_key_id, aws_secret_access_key, tls=True)
-    upload_msg = f"""-->Uploading {filename} to bucket {bucket_name}"""
+    upload_msg = f"""-->Uploading {filename} to bucket {bucket_name} \n"""
     print(upload_msg)
     log_message += upload_msg
     f = open(filename, "rb")
-    conn.upload(filename, f, bucket_name, public=True, expires=86400, content_type="application/json", headers={'content-encoding': 'gzip'})
-    done_msg = "-->Done uploading."
+    conn.upload(filename, f, bucket_name, public=True, expires=expiration, content_type="application/json", headers={'content-encoding': 'gzip'})
+    done_msg = "-->Done uploading. \n"
     print(done_msg)
     log_message += done_msg
 
@@ -237,12 +229,15 @@ def send_log_email(message, time):
         response = sg.client.mail.send.post(request_body=mail.get())
         print(response.headers)
 
+# set current time and log message
 current_time = datetime.datetime.now()
 log_message = f"-->Running script at {current_time} \n"
 
+# actually run the script
 try:
     get_data_and_upload()
 except Exception as e:
+    # catch errors
     print(log_message, '-->Error raised:\n', e)
     log_message += '-->Error raised:\n'
     log_message += str(e)
@@ -251,6 +246,6 @@ else:
 finally:
     done_msg = '\n-->All done.<--'
     log_message += done_msg
-    send_log_email(log_message, current_time)
+    send_log_email(log_message, current_time) # sends an email with log
+    send_telegram_msg(log_message, group_chat_id) # sends a telegram message with log
     print(done_msg)
-

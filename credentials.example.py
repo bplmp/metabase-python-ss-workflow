@@ -1,0 +1,10 @@
+username = "username_metabase"
+password = "password_metabase"
+api_endpoint = "http://metabase.educacao.intranet:3000/api/"
+bucket_name = 'amazon_s3_bucket'
+aws_access_key_id = 'key'
+aws_secret_access_key = 'secret_key'
+sendgrid_key = 'sengrid_key' # for email sending
+recipient_emails = ["a@a.com"]
+telegram_token = 'telegram_bot_token'
+group_chat_id = 'patio_int_chat_id'
